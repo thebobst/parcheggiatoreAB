@@ -50,9 +50,7 @@ header { display: flex; align-items: center; justify-content: space-between; pad
 .drawer-label { font-size: 12px; color: var(--muted); }
 .drawer-val { font-size: 12px; font-family: monospace; color: var(--acc); min-width: 40px; text-align: right; }
 input[type=range] { flex: 1; margin: 0 10px; accent-color: var(--acc); }
-.toggle-wrap { display: flex; gap: 6px; }
-.toggle-btn { font-size: 11px; padding: 4px 10px; border-radius: 20px; border: 1px solid var(--border); background: transparent; color: var(--muted); cursor: pointer; font-family: monospace; transition: all 0.2s; }
-.toggle-btn.on { border-color: var(--acc); color: var(--acc); background: rgba(0,201,128,0.08); }
+
 .leaflet-control-zoom { display: none; }
 </style>
 </head>
@@ -78,14 +76,7 @@ input[type=range] { flex: 1; margin: 0 10px; accent-color: var(--acc); }
       <input type="range" id="sliderRadius" min="200" max="1500" step="100" value="700" oninput="document.getElementById('valRadius').textContent=this.value+'m'">
       <span class="drawer-val" id="valRadius">700m</span>
     </div>
-    <div class="drawer-row">
-      <span class="drawer-label">Tipo strade</span>
-      <div class="toggle-wrap">
-        <button class="toggle-btn on" id="btnRes" onclick="toggleRoad('residential')">Residenziali</button>
-        <button class="toggle-btn on" id="btnSec" onclick="toggleRoad('secondary')">Secondarie</button>
-        <button class="toggle-btn" id="btnPri" onclick="toggleRoad('primary')">Principali</button>
-      </div>
-    </div>
+
   </div>
 
   <div class="progress"><div class="progress-fill" id="prog"></div></div>
@@ -100,22 +91,14 @@ input[type=range] { flex: 1; margin: 0 10px; accent-color: var(--acc); }
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 // ── Config ────────────────────────────────────────────────────────────────
-const ROAD_FILTERS = {
-  residential: true,
-  secondary: true,
-  primary: false
-};
-
 const LOOP_COLORS = ['#00c980','#00d4b8','#00aaff','#7c6fff','#d946c2','#ff5f2e','#ffaa00'];
 
 // ── State ─────────────────────────────────────────────────────────────────
 let map, originMarker, routeGroup;
 let state = 'idle';
 let origin = null;
-let loopN = 0;
 let fetchTimer = null;
 let allRoutePoints = [];
-let visitedSegments = new Set();
 let totalRoads = 0;
 
 // ── Map init ──────────────────────────────────────────────────────────────
@@ -138,32 +121,7 @@ function placeOrigin(lat, lng) {
   originMarker = L.marker([lat, lng], { icon }).addTo(map);
 }
 
-// ── OSM road fetching ─────────────────────────────────────────────────────
-async function fetchOSMRoads(lat, lng, radius) {
-  // Build highway filter based on settings
-  const types = [];
-  if (ROAD_FILTERS.residential) types.push('"residential"', '"living_street"', '"unclassified"');
-  if (ROAD_FILTERS.secondary)   types.push('"secondary"', '"tertiary"', '"secondary_link"', '"tertiary_link"');
-  if (ROAD_FILTERS.primary)     types.push('"primary"', '"primary_link"', '"trunk"');
-
-  const filter = types.join('|').replace(/"/g,'');
-  const query = `
-    [out:json][timeout:15];
-    (
-      way["highway"~"^(${filter})$"]["access"!="private"]["motor_vehicle"!="no"]
-        (around:${radius},${lat},${lng});
-    );
-    out geom;
-  `;
-  const res = await fetch('https://overpass-api.de/api/interpreter', {
-    method: 'POST',
-    body: 'data=' + encodeURIComponent(query)
-  });
-  const data = await res.json();
-  return data.elements || [];
-}
-
-// ── Smart routing algorithm ───────────────────────────────────────────────
+// ── Geometry helpers ──────────────────────────────────────────────────────
 function haversine(a, b) {
   const R = 6371000;
   const dLat = (b.lat - a.lat) * Math.PI / 180;
@@ -172,148 +130,50 @@ function haversine(a, b) {
   return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1-x));
 }
 
-function segmentKey(a, b) {
-  // Direction-aware key for one-way awareness
-  return `${a.lat.toFixed(5)},${a.lng.toFixed(5)}>${b.lat.toFixed(5)},${b.lng.toFixed(5)}`;
+function offsetPoint(center, distM, angleDeg) {
+  const R = 6371000;
+  const angle = angleDeg * Math.PI / 180;
+  const dlat = (distM * Math.cos(angle)) / R * (180 / Math.PI);
+  const dlng = (distM * Math.sin(angle)) / (R * Math.cos(center.lat * Math.PI / 180)) * (180 / Math.PI);
+  return { lat: center.lat + dlat, lng: center.lng + dlng };
 }
 
-function buildGraph(ways, origin) {
-  // Build adjacency graph from OSM ways
-  const nodes = {}; // id -> {lat,lng}
-  const edges = []; // {from, to, dist, oneway, highway}
+// ── Smart waypoint generation ─────────────────────────────────────────────
+// Each loop covers a NEW angular sector not covered by previous loops,
+// at a larger radius. Uses golden-angle rotation to maximally spread coverage.
+function generateSmartWaypoints(center, loopNum, maxRadius) {
+  const STEP = Math.min(150 + loopNum * 80, maxRadius); // radius grows per loop
+  const radius = Math.min(STEP, maxRadius);
 
-  ways.forEach(way => {
-    const geom = way.geometry;
-    if (!geom || geom.length < 2) return;
-    const oneway = way.tags && (way.tags.oneway === 'yes' || way.tags.junction === 'roundabout');
-    const highway = way.tags && way.tags.highway;
+  // Golden angle rotation ensures each loop explores new directions
+  const goldenAngle = 137.508;
+  const startAngle = (loopNum - 1) * goldenAngle;
 
-    for (let i = 0; i < geom.length; i++) {
-      const id = `${geom[i].lat.toFixed(6)},${geom[i].lon.toFixed(6)}`;
-      nodes[id] = { lat: geom[i].lat, lng: geom[i].lon };
-    }
+  // Number of spoke points scales with radius
+  const numSpokes = Math.max(6, Math.round(radius / 60));
+  const pts = [];
 
-    for (let i = 0; i < geom.length - 1; i++) {
-      const fromId = `${geom[i].lat.toFixed(6)},${geom[i].lon.toFixed(6)}`;
-      const toId   = `${geom[i+1].lat.toFixed(6)},${geom[i+1].lon.toFixed(6)}`;
-      const from = { lat: geom[i].lat, lng: geom[i].lon };
-      const to   = { lat: geom[i+1].lat, lng: geom[i+1].lon };
-      const dist = haversine(from, to);
-      edges.push({ fromId, toId, from, to, dist, oneway, highway });
-      if (!oneway) edges.push({ fromId: toId, toId: fromId, from: to, to: from, dist, oneway, highway });
-    }
-  });
-
-  return { nodes, edges };
-}
-
-function scoreEdge(edge, origin, visitedSegments, maxRadius) {
-  const toNode = edge.to;
-  const distFromOrigin = haversine(toNode, origin);
-
-  // Penalize if too far from origin
-  if (distFromOrigin > maxRadius) return Infinity;
-
-  let score = 0;
-
-  // 1. PRIORITY: stay close to origin (most important)
-  score += distFromOrigin * 2.5;
-
-  // 2. Penalize already visited segments
-  const key = segmentKey(edge.from, edge.to);
-  if (visitedSegments.has(key)) score += 800;
-
-  // 3. Penalize one-way roads that lead away from origin
-  if (edge.oneway) {
-    const awayAngle = Math.atan2(toNode.lat - origin.lat, toNode.lng - origin.lng);
-    const fromAngle = Math.atan2(edge.from.lat - origin.lat, edge.from.lng - origin.lng);
-    const diff = Math.abs(awayAngle - fromAngle);
-    if (diff > Math.PI / 2 && diff < 3 * Math.PI / 2) score += 400; // leading away
+  // Build a "lollipop" path: go out to radius, sweep arc, come back
+  // This ensures OSRM routes along real streets at target distance
+  for (let i = 0; i <= numSpokes; i++) {
+    const angle = startAngle + (i / numSpokes) * 360;
+    pts.push(offsetPoint(center, radius, angle));
   }
 
-  // 4. Prefer residential/living_street (more parking)
-  if (edge.highway === 'residential' || edge.highway === 'living_street') score -= 50;
-  if (edge.highway === 'primary' || edge.highway === 'trunk') score += 100;
-
-  return score;
+  // Bookend with origin so route starts and ends near center
+  pts.unshift({ lat: center.lat, lng: center.lng });
+  pts.push({ lat: center.lat, lng: center.lng });
+  return pts;
 }
 
-function buildSpiralRoute(graph, origin, maxRadius, loop) {
-  // Greedy nearest-unvisited algorithm with spiral expansion
-  const { edges } = graph;
-
-  // Build adjacency map
-  const adj = {};
-  edges.forEach(e => {
-    if (!adj[e.fromId]) adj[e.fromId] = [];
-    adj[e.fromId].push(e);
-  });
-
-  // Find closest node to origin as start
-  let startId = null;
-  let minDist = Infinity;
-  Object.entries(graph.nodes).forEach(([id, node]) => {
-    const d = haversine(node, origin);
-    if (d < minDist) { minDist = d; startId = id; }
-  });
-
-  if (!startId) return [];
-
-  // Target radius for this loop — grows faster
-  const targetRadius = 100 + (loop - 1) * 120;
-
-  const path = [graph.nodes[startId]];
-  const localVisited = new Set();
-  let currentId = startId;
-  let steps = 0;
-  const maxSteps = 120;
-
-  while (steps < maxSteps) {
-    const neighbors = adj[currentId] || [];
-    if (!neighbors.length) break;
-
-    // Score all neighbors
-    let best = null;
-    let bestScore = Infinity;
-
-    neighbors.forEach(edge => {
-      // Skip if dist from origin > maxRadius
-      const d = haversine(edge.to, origin);
-      if (d > maxRadius) return;
-
-      let score = scoreEdge(edge, origin, visitedSegments, maxRadius);
-
-      // Bonus for hitting target radius ring (spiral expansion)
-      const distDiff = Math.abs(d - targetRadius);
-      score += distDiff * 0.5;
-
-      // Penalize locally visited in this path
-      const localKey = segmentKey(edge.from, edge.to);
-      if (localVisited.has(localKey)) score += 500;
-
-      if (score < bestScore) { bestScore = score; best = edge; }
-    });
-
-    if (!best || bestScore === Infinity) break;
-
-    path.push(best.to);
-    const key = segmentKey(best.from, best.to);
-    localVisited.add(key);
-    visitedSegments.add(key);
-    currentId = best.toId;
-    steps++;
-
-    // Try to close the loop back to start after enough steps
-    if (steps > 20) {
-      const distToStart = haversine(graph.nodes[currentId] || best.to, path[0]);
-      if (distToStart < 100) {
-        path.push(path[0]); // close loop
-        break;
-      }
-    }
-  }
-
-  return path;
+// ── OSRM routing ──────────────────────────────────────────────────────────
+async function fetchRoute(waypoints) {
+  const coords = waypoints.map(w => `${w.lng},${w.lat}`).join(';');
+  const url = `https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson`;
+  const res = await fetch(url);
+  const data = await res.json();
+  if (!data.routes || !data.routes[0]) return null;
+  return data.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
 }
 
 // ── Main loop ─────────────────────────────────────────────────────────────
@@ -321,44 +181,33 @@ async function runLoop(loopNum) {
   if (state !== 'running') return;
 
   const maxRadius = parseInt(document.getElementById('sliderRadius').value);
-  const currentRadius = Math.min(80 + (loopNum - 1) * 65, maxRadius);
+  const radius = Math.min(150 + (loopNum - 1) * 100, maxRadius);
 
-  setMsg('Giro ' + loopNum + ' — scarico strade OSM...', '');
+  setMsg('Giro ' + loopNum + ' — calcolo percorso (' + radius + 'm)...', '');
 
   try {
-    const ways = await fetchOSMRoads(origin.lat, origin.lng, currentRadius);
-    if (!ways.length) {
-      setMsg('Nessuna strada trovata, espando...', 'err');
-      if (state === 'running' && currentRadius < maxRadius)
-        fetchTimer = setTimeout(() => runLoop(loopNum + 1), 1500);
-      return;
-    }
+    const waypoints = generateSmartWaypoints(origin, loopNum, maxRadius);
+    const pts = await fetchRoute(waypoints);
 
-    const graph = buildGraph(ways, origin);
-    const path = buildSpiralRoute(graph, origin, currentRadius, loopNum);
-
-    if (path.length > 1) {
+    if (pts && pts.length > 1) {
       const color = LOOP_COLORS[Math.min(loopNum - 1, LOOP_COLORS.length - 1)];
-      const latlngs = path.map(p => [p.lat, p.lng]);
-      L.polyline(latlngs, { color, weight: 4, opacity: 0.85, lineCap: 'round', lineJoin: 'round' }).addTo(routeGroup);
-      allRoutePoints = allRoutePoints.concat(latlngs);
+      L.polyline(pts, { color, weight: 4, opacity: 0.85, lineCap: 'round', lineJoin: 'round' }).addTo(routeGroup);
+      allRoutePoints = allRoutePoints.concat(pts);
 
-      totalRoads += ways.length;
-      document.getElementById('sDist').textContent = Math.round(currentRadius) + ' m';
+      document.getElementById('sDist').textContent = radius + ' m';
       document.getElementById('sLoop').textContent = loopNum;
-      document.getElementById('sRoads').textContent = totalRoads;
-      document.getElementById('prog').style.width = Math.min((currentRadius / maxRadius) * 90, 90) + '%';
-      setMsg('Giro ' + loopNum + ' completato — ' + path.length + ' nodi', 'ok');
+      document.getElementById('sRoads').textContent = allRoutePoints.length;
+      document.getElementById('prog').style.width = Math.min((radius / maxRadius) * 90, 90) + '%';
+      setMsg('Giro ' + loopNum + ' — raggio ' + radius + 'm', 'ok');
     }
 
-    if (state === 'running' && currentRadius < maxRadius) {
-      fetchTimer = setTimeout(() => runLoop(loopNum + 1), 3000);
-    } else if (currentRadius >= maxRadius) {
+    if (state === 'running' && radius < maxRadius) {
+      fetchTimer = setTimeout(() => runLoop(loopNum + 1), 2500);
+    } else if (radius >= maxRadius) {
       setMsg('Raggio massimo raggiunto. Premi STOP se hai trovato parcheggio.', 'ok');
     }
 
   } catch(e) {
-    console.error(e);
     setMsg('Errore rete, riprovo...', 'err');
     if (state === 'running') fetchTimer = setTimeout(() => runLoop(loopNum), 3500);
   }
@@ -386,10 +235,8 @@ function startSession() {
 }
 
 function begin() {
-  visitedSegments = new Set();
   allRoutePoints = [];
   totalRoads = 0;
-  loopN = 1;
   state = 'running';
   initMap(origin.lat, origin.lng);
   placeOrigin(origin.lat, origin.lng);
@@ -435,11 +282,7 @@ function toggleDrawer() {
   document.getElementById('drawer').classList.toggle('open');
 }
 
-function toggleRoad(type) {
-  ROAD_FILTERS[type] = !ROAD_FILTERS[type];
-  const id = type === 'residential' ? 'btnRes' : type === 'secondary' ? 'btnSec' : 'btnPri';
-  document.getElementById(id).classList.toggle('on', ROAD_FILTERS[type]);
-}
+
 
 function setMsg(t, cls) {
   const el = document.getElementById('msg');
