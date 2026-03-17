@@ -138,32 +138,65 @@ function offsetPoint(center, distM, angleDeg) {
   return { lat: center.lat + dlat, lng: center.lng + dlng };
 }
 
+// ── Direction tracking ────────────────────────────────────────────────────
+// Tracks which angular sectors have been explored, in 30° buckets
+let exploredSectors = new Set(); // set of sector indices (0..11)
+
+function angleSector(angleDeg) {
+  return Math.floor(((angleDeg % 360) + 360) % 360 / 30); // 12 sectors of 30°
+}
+
+function markSectorsExplored(pts, center) {
+  pts.forEach(([lat, lng]) => {
+    const angle = Math.atan2(lng - center.lng, lat - center.lat) * 180 / Math.PI;
+    exploredSectors.add(angleSector(angle));
+  });
+}
+
 // ── Smart waypoint generation ─────────────────────────────────────────────
-// Each loop covers a NEW angular sector not covered by previous loops,
-// at a larger radius. Uses golden-angle rotation to maximally spread coverage.
+// Priority 1: closest to origin (radius grows gradually)
+// Priority 2: avoid already-explored directions — but only if alternatives
+//             exist within TOLERANCE extra distance
 function generateSmartWaypoints(center, loopNum, maxRadius) {
-  const STEP = Math.min(150 + loopNum * 80, maxRadius); // radius grows per loop
-  const radius = Math.min(STEP, maxRadius);
+  const radius = Math.min(150 + (loopNum - 1) * 100, maxRadius);
+  const numSpokes = Math.max(8, Math.round(radius / 50));
+  const TOLERANCE = 1.25; // accept up to 25% more distance to avoid explored sector
 
-  // Golden angle rotation ensures each loop explores new directions
-  const goldenAngle = 137.508;
-  const startAngle = (loopNum - 1) * goldenAngle;
-
-  // Number of spoke points scales with radius
-  const numSpokes = Math.max(6, Math.round(radius / 60));
-  const pts = [];
-
-  // Build a "lollipop" path: go out to radius, sweep arc, come back
-  // This ensures OSRM routes along real streets at target distance
-  for (let i = 0; i <= numSpokes; i++) {
-    const angle = startAngle + (i / numSpokes) * 360;
-    pts.push(offsetPoint(center, radius, angle));
+  // Score each candidate angle: lower = better
+  // Base score is radius (distance from origin) — always dominates
+  // Small penalty for already-explored sectors, only if alternatives exist
+  const candidates = [];
+  for (let i = 0; i < numSpokes; i++) {
+    const angle = (i / numSpokes) * 360;
+    const sector = angleSector(angle);
+    const explored = exploredSectors.has(sector);
+    // Penalty is a fraction of radius so proximity always wins
+    const penalty = explored ? radius * 0.15 : 0;
+    candidates.push({ angle, score: radius + penalty });
   }
 
-  // Bookend with origin so route starts and ends near center
+  // Sort by score — best (least penalty, closest) first
+  candidates.sort((a, b) => a.score - b.score);
+
+  // Only use angles whose score <= best score * TOLERANCE
+  const best = candidates[0].score;
+  const chosen = candidates
+    .filter(c => c.score <= best * TOLERANCE)
+    .map(c => c.angle);
+
+  // Build circular sweep using chosen angles
+  const pts = chosen.map(angle => offsetPoint(center, radius, angle));
+
+  // Sort by angle to form a continuous arc
+  pts.sort((a, b) => {
+    const aa = Math.atan2(a.lng - center.lng, a.lat - center.lat);
+    const ab = Math.atan2(b.lng - center.lng, b.lat - center.lat);
+    return aa - ab;
+  });
+
   pts.unshift({ lat: center.lat, lng: center.lng });
   pts.push({ lat: center.lat, lng: center.lng });
-  return pts;
+  return { pts, radius };
 }
 
 // ── OSRM routing ──────────────────────────────────────────────────────────
@@ -181,18 +214,18 @@ async function runLoop(loopNum) {
   if (state !== 'running') return;
 
   const maxRadius = parseInt(document.getElementById('sliderRadius').value);
-  const radius = Math.min(150 + (loopNum - 1) * 100, maxRadius);
+  const { pts, radius } = generateSmartWaypoints(origin, loopNum, maxRadius);
 
   setMsg('Giro ' + loopNum + ' — calcolo percorso (' + radius + 'm)...', '');
 
   try {
-    const waypoints = generateSmartWaypoints(origin, loopNum, maxRadius);
-    const pts = await fetchRoute(waypoints);
+    const route = await fetchRoute(pts);
 
-    if (pts && pts.length > 1) {
+    if (route && route.length > 1) {
       const color = LOOP_COLORS[Math.min(loopNum - 1, LOOP_COLORS.length - 1)];
-      L.polyline(pts, { color, weight: 4, opacity: 0.85, lineCap: 'round', lineJoin: 'round' }).addTo(routeGroup);
-      allRoutePoints = allRoutePoints.concat(pts);
+      L.polyline(route, { color, weight: 4, opacity: 0.85, lineCap: 'round', lineJoin: 'round' }).addTo(routeGroup);
+      allRoutePoints = allRoutePoints.concat(route);
+      markSectorsExplored(route, origin);
 
       document.getElementById('sDist').textContent = radius + ' m';
       document.getElementById('sLoop').textContent = loopNum;
@@ -237,6 +270,7 @@ function startSession() {
 function begin() {
   allRoutePoints = [];
   totalRoads = 0;
+  exploredSectors = new Set();
   state = 'running';
   initMap(origin.lat, origin.lng);
   placeOrigin(origin.lat, origin.lng);
