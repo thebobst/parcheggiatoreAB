@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>ParkSpin</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0e0e10;
+    --surface: #1a1a1f;
+    --surface2: #25252d;
+    --accent: #00e5a0;
+    --accent2: #ff6b35;
+    --text: #f0f0f0;
+    --muted: #888;
+    --border: #333;
+    --radius: 16px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+  body {
+    font-family: 'DM Sans', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  header {
+    padding: 16px 20px 10px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    z-index: 100;
+  }
+
+  .logo {
+    font-family: 'Space Mono', monospace;
+    font-size: 1.2rem;
+    font-weight: 700;
+    color: var(--accent);
+    letter-spacing: -0.5px;
+  }
+
+  .logo span { color: var(--text); }
+
+  .status-badge {
+    font-size: 0.7rem;
+    font-family: 'Space Mono', monospace;
+    padding: 4px 10px;
+    border-radius: 20px;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    transition: all 0.3s;
+  }
+
+  .status-badge.active {
+    border-color: var(--accent);
+    color: var(--accent);
+    box-shadow: 0 0 12px rgba(0,229,160,0.2);
+  }
+
+  #map {
+    flex: 1;
+    width: 100%;
+    z-index: 1;
+  }
+
+  .panel {
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    padding: 20px;
+    flex-shrink: 0;
+    z-index: 100;
+  }
+
+  .stats-row {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+
+  .stat-box {
+    flex: 1;
+    background: var(--surface2);
+    border-radius: 12px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+  }
+
+  .stat-label {
+    font-size: 0.65rem;
+    font-family: 'Space Mono', monospace;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+  }
+
+  .stat-value {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--accent);
+    font-family: 'Space Mono', monospace;
+  }
+
+  .btn-main {
+    width: 100%;
+    padding: 16px;
+    border-radius: var(--radius);
+    border: none;
+    font-family: 'Space Mono', monospace;
+    font-size: 0.9rem;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    cursor: pointer;
+    transition: all 0.2s;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .btn-main.start {
+    background: var(--accent);
+    color: #0e0e10;
+  }
+
+  .btn-main.start:active { transform: scale(0.98); }
+
+  .btn-main.stop {
+    background: var(--accent2);
+    color: white;
+  }
+
+  .btn-main:disabled {
+    background: var(--surface2);
+    color: var(--muted);
+    cursor: not-allowed;
+  }
+
+  .btn-secondary {
+    width: 100%;
+    padding: 12px;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text);
+    font-family: 'DM Sans', sans-serif;
+    font-size: 0.85rem;
+    cursor: pointer;
+    margin-top: 10px;
+    transition: all 0.2s;
+  }
+
+  .btn-secondary:active { background: var(--surface2); }
+
+  .progress-bar {
+    height: 3px;
+    background: var(--border);
+    border-radius: 2px;
+    margin-bottom: 16px;
+    overflow: hidden;
+  }
+
+  .progress-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 2px;
+    transition: width 1s ease;
+    width: 0%;
+  }
+
+  .msg {
+    font-size: 0.8rem;
+    color: var(--muted);
+    text-align: center;
+    margin-bottom: 14px;
+    min-height: 18px;
+    font-family: 'Space Mono', monospace;
+  }
+
+  .msg.error { color: var(--accent2); }
+  .msg.ok { color: var(--accent); }
+
+  /* Leaflet overrides */
+  .leaflet-control-zoom { display: none; }
+  .leaflet-container { background: #111; }
+
+  /* Pulsing marker */
+  .pulse-ring {
+    width: 20px; height: 20px;
+    border-radius: 50%;
+    background: var(--accent);
+    position: relative;
+    box-shadow: 0 0 0 0 rgba(0,229,160,0.6);
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(0,229,160,0.6); }
+    70% { box-shadow: 0 0 0 14px rgba(0,229,160,0); }
+    100% { box-shadow: 0 0 0 0 rgba(0,229,160,0); }
+  }
+
+  .spinner {
+    display: inline-block;
+    width: 14px; height: 14px;
+    border: 2px solid rgba(0,0,0,0.3);
+    border-top-color: #0e0e10;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    vertical-align: middle;
+    margin-right: 6px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">Park<span>Spin</span></div>
+  <div class="status-badge" id="statusBadge">IN ATTESA</div>
+</header>
+
+<div id="map"></div>
+
+<div class="panel">
+  <div class="stats-row">
+    <div class="stat-box">
+      <div class="stat-label">Distanza max</div>
+      <div class="stat-value" id="statDist">— m</div>
+    </div>
+    <div class="stat-box">
+      <div class="stat-label">Strade coperte</div>
+      <div class="stat-value" id="statStreets">0</div>
+    </div>
+    <div class="stat-box">
+      <div class="stat-label">Giro #</div>
+      <div class="stat-value" id="statLoop">0</div>
+    </div>
+  </div>
+
+  <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+  <div class="msg" id="msg">Premi START per trovare parcheggio</div>
+
+  <button class="btn-main start" id="btnMain" onclick="handleMain()">▶ START</button>
+  <button class="btn-secondary" id="btnGmaps" style="display:none" onclick="openGmaps()">↗ Apri in Google Maps</button>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+// ─── STATE ───────────────────────────────────────────────────────────────────
+let map, originMarker, routeLayer, watchId;
+let origin = null;
+let running = false;
+let routePoints = [];
+let currentRadius = 80; // metri iniziali
+let loopCount = 0;
+let streetCount = 0;
+let visitedNodes = new Set();
+
+// ─── MAP INIT ────────────────────────────────────────────────────────────────
+map = L.map('map', { zoomControl: false, attributionControl: false });
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  maxZoom: 19
+}).addTo(map);
+map.setView([41.9028, 12.4964], 16);
+
+// ─── MAIN HANDLER ────────────────────────────────────────────────────────────
+function handleMain() {
+  if (!running) startSearch();
+  else stopSearch();
+}
+
+function startSearch() {
+  setMsg('Rilevamento posizione GPS…', '');
+  document.getElementById('btnMain').disabled = true;
+
+  if (!navigator.geolocation) {
+    setMsg('GPS non disponibile su questo browser', 'error');
+    document.getElementById('btnMain').disabled = false;
+    return;
+  }
+
+  navigator.geolocation.getCurrentPosition(pos => {
+    origin = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+    initSession();
+  }, err => {
+    setMsg('Impossibile ottenere la posizione GPS', 'error');
+    document.getElementById('btnMain').disabled = false;
+  }, { enableHighAccuracy: true, timeout: 10000 });
+}
+
+function initSession() {
+  running = true;
+  routePoints = [];
+  visitedNodes = new Set();
+  currentRadius = 80;
+  loopCount = 0;
+  streetCount = 0;
+
+  // Map center
+  map.setView([origin.lat, origin.lng], 17);
+
+  // Origin marker
+  if (originMarker) map.removeLayer(originMarker);
+  const icon = L.divIcon({ html: '<div class="pulse-ring"></div>', className: '', iconSize: [20, 20], iconAnchor: [10, 10] });
+  originMarker = L.marker([origin.lat, origin.lng], { icon }).addTo(map);
+
+  if (routeLayer) map.removeLayer(routeLayer);
+  routeLayer = L.layerGroup().addTo(map);
+
+  document.getElementById('btnMain').disabled = false;
+  document.getElementById('btnMain').className = 'btn-main stop';
+  document.getElementById('btnMain').innerHTML = '■ STOP — ho trovato parcheggio';
+  document.getElementById('statusBadge').className = 'status-badge active';
+  document.getElementById('statusBadge').textContent = 'RICERCA';
+
+  setMsg('<span class="spinner"></span>Calcolo percorso…', '');
+  fetchNextSpiral();
+}
+
+function stopSearch() {
+  running = false;
+  if (watchId) navigator.geolocation.clearWatch(watchId);
+
+  document.getElementById('btnMain').className = 'btn-main start';
+  document.getElementById('btnMain').innerHTML = '▶ NUOVA RICERCA';
+  document.getElementById('statusBadge').className = 'status-badge';
+  document.getElementById('statusBadge').textContent = 'COMPLETATO';
+  document.getElementById('btnGmaps').style.display = routePoints.length > 1 ? 'block' : 'none';
+  setMsg('Parcheggio trovato! 🎉', 'ok');
+  document.getElementById('progressFill').style.width = '100%';
+}
+
+// ─── SPIRAL ROUTE GENERATION ─────────────────────────────────────────────────
+async function fetchNextSpiral() {
+  if (!running) return;
+
+  loopCount++;
+  document.getElementById('statLoop').textContent = loopCount;
+
+  // Generate spiral waypoints around origin
+  const waypoints = generateSpiralWaypoints(origin, currentRadius, loopCount);
+
+  // Use OSRM to snap waypoints to real roads
+  try {
+    const coords = waypoints.map(w => `${w.lng},${w.lat}`).join(';');
+    const url = `https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson&steps=true`;
+    const res = await fetch(url);
+    const data = await res.json();
+
+    if (data.routes && data.routes.length > 0) {
+      const route = data.routes[0];
+      const geom = route.geometry.coordinates; // [lng,lat]
+
+      // Extract new points
+      const newPoints = geom.map(c => [c[1], c[0]]);
+      routePoints = routePoints.concat(newPoints);
+
+      // Draw on map
+      drawRoute(newPoints, loopCount);
+
+      // Update stats
+      const dist = Math.round(currentRadius);
+      document.getElementById('statDist').textContent = dist + ' m';
+      streetCount += route.legs ? route.legs.reduce((a, l) => a + (l.steps ? l.steps.length : 0), 0) : 0;
+      document.getElementById('statStreets').textContent = streetCount;
+
+      // Progress bar: fill proportionally to loops (max 10 loops = 100%)
+      document.getElementById('progressFill').style.width = Math.min(loopCount * 10, 90) + '%';
+
+      setMsg('Giro ' + loopCount + ' — cerchio a ' + dist + 'm', 'ok');
+
+      // Schedule next spiral if still running
+      if (running) {
+        currentRadius += 60; // expand radius each loop
+        setTimeout(fetchNextSpiral, 2500);
+      }
+    } else {
+      setMsg('Nessuna strada trovata in questo raggio, espando…', '');
+      currentRadius += 80;
+      if (running) setTimeout(fetchNextSpiral, 1500);
+    }
+  } catch (e) {
+    setMsg('Errore rete, riprovo…', 'error');
+    if (running) setTimeout(fetchNextSpiral, 3000);
+  }
+}
+
+function generateSpiralWaypoints(center, radius, loop) {
+  const R = 6371000;
+  const points = [];
+  const numPoints = Math.max(8, loop * 4); // more points for larger loops
+  
+  // Start from closest unvisited direction
+  const startAngle = (loop - 1) * 137.5; // golden angle offset to cover new areas
+
+  for (let i = 0; i <= numPoints; i++) {
+    const angle = (startAngle + (i / numPoints) * 360) * Math.PI / 180;
+    
+    // Slight ellipse to follow typical street grid
+    const rx = radius;
+    const ry = radius * 0.85;
+    
+    const dlat = (ry * Math.cos(angle)) / R * (180 / Math.PI);
+    const dlng = (rx * Math.sin(angle)) / (R * Math.cos(center.lat * Math.PI / 180)) * (180 / Math.PI);
+
+    points.push({ lat: center.lat + dlat, lng: center.lng + dlng });
+  }
+
+  // Add center at start and end so route comes back
+  points.unshift({ lat: center.lat, lng: center.lng });
+  points.push({ lat: center.lat, lng: center.lng });
+
+  return points;
+}
+
+function drawRoute(points, loop) {
+  // Color shifts from green to orange as radius grows
+  const t = Math.min((loop - 1) / 8, 1);
+  const r = Math.round(0 + t * 255);
+  const g = Math.round(229 - t * 100);
+  const b = Math.round(160 - t * 160);
+  const color = `rgb(${r},${g},${b})`;
+
+  L.polyline(points, {
+    color,
+    weight: 4,
+    opacity: 0.85,
+    lineJoin: 'round',
+    lineCap: 'round'
+  }).addTo(routeLayer);
+}
+
+// ─── OPEN IN GOOGLE MAPS ─────────────────────────────────────────────────────
+function openGmaps() {
+  if (routePoints.length < 2) return;
+  // Sample up to 8 waypoints for URL
+  const sample = sampleArray(routePoints, 8);
+  const origin_p = sample[0];
+  const dest_p = sample[sample.length - 1];
+  const waypts = sample.slice(1, -1).map(p => p[0] + ',' + p[1]).join('|');
+  let url = `https://www.google.com/maps/dir/?api=1&origin=${origin_p[0]},${origin_p[1]}&destination=${dest_p[0]},${dest_p[1]}&travelmode=driving`;
+  if (waypts) url += `&waypoints=${waypts}`;
+  window.open(url, '_blank');
+}
+
+function sampleArray(arr, n) {
+  if (arr.length <= n) return arr;
+  const step = Math.floor(arr.length / n);
+  const out = [];
+  for (let i = 0; i < n; i++) out.push(arr[i * step]);
+  return out;
+}
+
+// ─── UI HELPERS ──────────────────────────────────────────────────────────────
+function setMsg(text, type) {
+  const el = document.getElementById('msg');
+  el.innerHTML = text;
+  el.className = 'msg' + (type ? ' ' + type : '');
+}
+</script>
+</body>
+</html>
