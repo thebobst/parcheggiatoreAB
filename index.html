@@ -160,7 +160,7 @@ function markSectorsExplored(pts, center) {
 function generateSmartWaypoints(center, loopNum, maxRadius) {
   const radius = Math.min(150 + (loopNum - 1) * 100, maxRadius);
   const numSpokes = Math.max(8, Math.round(radius / 50));
-  const TOLERANCE = 1.25; // accept up to 25% more distance to avoid explored sector
+  const TOLERANCE = 1.10; // accept up to 10% more distance to avoid explored sector
 
   // Score each candidate angle: lower = better
   // Base score is radius (distance from origin) — always dominates
@@ -171,7 +171,7 @@ function generateSmartWaypoints(center, loopNum, maxRadius) {
     const sector = angleSector(angle);
     const explored = exploredSectors.has(sector);
     // Penalty is a fraction of radius so proximity always wins
-    const penalty = explored ? radius * 0.15 : 0;
+    const penalty = explored ? radius * 0.05 : 0;
     candidates.push({ angle, score: radius + penalty });
   }
 
