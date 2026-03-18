@@ -57,7 +57,7 @@ input[type=range] { flex: 1; margin: 0 10px; accent-color: var(--acc); }
 <body>
 
 <header>
-  <div class="logo">Parcheggio<span>APP</span>iacere21</div>
+  <div class="logo">Parcheggio<span>APP</span>iacere22</div>
   <div class="badge" id="badge">In attesa</div>
 </header>
 
@@ -160,7 +160,7 @@ function markSectorsExplored(pts, center) {
 // Priority 3: waypoints ordered as a convex clockwise ring — no U-turns
 function generateSmartWaypoints(center, loopNum, maxRadius) {
   const radius = Math.min(150 + (loopNum - 1) * 100, maxRadius);
-  const numSpokes = Math.max(8, Math.round(radius / 50));
+  const numSpokes = Math.max(16, Math.round(radius / 25));
   const TOLERANCE = 1.10;
 
   const candidates = [];
