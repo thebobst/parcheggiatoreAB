@@ -57,7 +57,7 @@ input[type=range] { flex: 1; margin: 0 10px; accent-color: var(--acc); }
 <body>
 
 <header>
-  <div class="logo">Parcheggio<span>APP</span>iacere2</div>
+  <div class="logo">Parcheggio<span>APP</span>iacere21</div>
   <div class="badge" id="badge">In attesa</div>
 </header>
 
@@ -196,7 +196,7 @@ function generateSmartWaypoints(center, loopNum, maxRadius) {
 async function fetchRoute(waypoints) {
   const coords = waypoints.map(w => `${w.lng},${w.lat}`).join(';');
   // continue_straight=true asks OSRM to avoid U-turns at each waypoint
-  const url = `https://router.project-osrm.org/route/v1/bike/${coords}?overview=full&geometries=geojson&continue_straight=true`;
+  const url = `https://router.project-osrm.org/route/v1/foot/${coords}?overview=full&geometries=geojson&continue_straight=true`;
   const res = await fetch(url);
   const data = await res.json();
   if (!data.routes || !data.routes[0]) return null;
